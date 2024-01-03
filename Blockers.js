@@ -1,3 +1,6 @@
+//Macro that calls the script
+//!Blockers ?{Vertical mod|0} ?{Horizontal|0}
+
 on("ready",function(){
     on("chat:message",function(msg){
         if(msg.type=="api" && msg.content.indexOf("!Blockers")==0){
