@@ -1,0 +1,170 @@
+//torpedoRun
+on('chat:message', function(msg) {
+    if (msg.type !== 'api' || msg.content !== '!torpedoRun') return;
+    const HEX_SIZE = 24;
+    const LAYERS = ['gmlayer', 'objects'];
+    const pageid = Campaign().get('playerpageid');
+    LAYERS.forEach(layer => {
+        const torpedoes = findObjs({
+            _type: 'graphic',
+            _pageid: pageid,
+            layer: layer,
+            name: 'torpedo'
+        });
+        torpedoes.forEach(torpedo => {
+            const targetTokenId = torpedo.get('bar2_value');
+            if (targetTokenId) {
+                const targetToken = findObjs({
+                    _type: 'graphic',
+                    _pageid: pageid,
+                    layer: 'objects',
+                    _id: targetTokenId
+                }).filter(token => token.get('bar3_value') !== 'cloaked')[0];
+                if (targetToken) {
+                    const targetLocation = {
+                        left: targetToken.get('left'),
+                        top: targetToken.get('top')
+                    };
+                    torpedo.set('bar2_max', JSON.stringify(targetLocation));
+                    let moves = calculateMoves(torpedo);
+                    let distance = calculateDistance(torpedo, targetLocation);
+                    if (distance <= 2 * HEX_SIZE && moves >= 2) {
+                        sendChat('API', '!roll20AM --audio,play|GBraceForImpact');
+                    }
+                    moveTorpedo(torpedo, targetLocation, targetToken, moves);
+                }
+            }
+        });
+    });
+    sendChat('System', 'The torpedo run is complete.');
+});
+function calculateMoves(torpedo) {
+    let gmnotes = parseInt(torpedo.get('gmnotes'), 10) || 0;
+    let moves = 5;
+    if (gmnotes < 5) {
+        moves = gmnotes;
+    } else {
+        gmnotes -= 5;
+    }
+    torpedo.set('gmnotes', gmnotes);
+    return moves;
+}
+function calculateDistance(torpedo, targetLocation) {
+    const torpedoLocation = {
+        left: torpedo.get('left'),
+        top: torpedo.get('top')
+    };
+    const dx = targetLocation.left - torpedoLocation.left;
+    const dy = targetLocation.top - torpedoLocation.top;
+    return Math.sqrt(dx * dx + dy * dy);
+}
+function moveTorpedo(torpedo, targetLocation, targetToken, moves) {
+    var HEX_SIZE = 24;
+    const theName = targetToken.get('name');
+    let interval = setInterval(() => {
+        if (moves > 0) {
+            let distance = calculateDistance(torpedo, targetLocation);
+            if (distance <= (HEX_SIZE * 3) && theName == 'Ship' && moves >= 2) {
+                sendChat("API", "!roll20AM --edit,mode,single|TorpedoPing --audio,stop,nomenu|TorpedoPing");
+                let random = Math.floor(Math.random() * (3 - 1 + 1) + 1);
+                log('TTTTTTTTTTAAAAAAAAAAAATTTTTT' + random);
+                let uhoh = `!roll20AM --audio,play,nomenu|Gincoming${random}`;
+                sendChat("API", uhoh);
+            }
+            if (distance <= HEX_SIZE) {
+                checkImpact(torpedo);
+                clearInterval(interval);
+                return;
+            }
+
+            moveOneHex(torpedo, targetLocation);
+
+            moves--;
+            if (parseInt(torpedo.get("gmnotes")) <= 0) {
+                sendChat("API", "!roll20AM --edit,mode,single|TorpedoPing --audio,stop,nomenu|TorpedoPing");
+                sendChat("API","!roll20AM --audio,play,nomenu|kaboom");
+                spawnFx(torpedo.get("left"),torpedo.get("top"),'burst-death',torpedo.get("pageid"));
+                torpedo.remove();
+            }
+        } else {
+            //torpedo.remove();
+            clearInterval(interval);
+            sendChat("API", "!roll20AM --edit,mode,single|TorpedoPing --audio,stop,nomenu|TorpedoPing");
+        }
+    },3500);
+}
+function moveOneHex(torpedo, targetLocation) {
+    let HEX_SIZE = 24; //NEW CODE
+    const torpedoLocation = {
+        left: torpedo.get('left'),
+        top: torpedo.get('top')
+    };
+    const dx = targetLocation.left - torpedoLocation.left;
+    const dy = targetLocation.top - torpedoLocation.top;
+    const angle = Math.atan2(dy, dx);
+    sendChat("API", "!roll20AM --audio,play,nomenu|TorpedoPing");
+    torpedo.set({
+        left: torpedoLocation.left + HEX_SIZE * Math.cos(angle),
+        top: torpedoLocation.top + HEX_SIZE * Math.sin(angle)
+    });
+}
+function checkImpact(torpedo) {
+    let HEX_SIZE = 24; //NEW CODE
+    const pageid = torpedo.get('_pageid');
+    const torpedoLocation = {
+        left: torpedo.get('left'),
+        top: torpedo.get('top')
+    };
+    const impactedTokens = findObjs({
+        _type: 'graphic',
+        _pageid: pageid,
+        layer: 'objects'
+    }).filter(token => {
+        const distance = calculateDistance(torpedo, {
+            left: token.get('left'),
+            top: token.get('top')
+        });
+        return distance <= HEX_SIZE &&
+            ['ship', 'base', 'torpedo', 'moon', 'planet', 'obstacle'].includes(token.get('bar3_value'));
+    });
+   impactedTokens.forEach(token => {
+        const impacted = token.get('name');
+        log('IMPACTED TOKEN WAS ' + impacted);
+        const armorValue = parseInt(getAttrByName(token.get('represents'), 'ship_armor'), 10) || 0;
+        var damage = Math.max(armorValue - 25, 0);
+        if (damage < 0) {
+            damage = 0;
+        }
+        
+        /*
+&{template:swn-attack} {{charname=@{IA_CapitalShip|ship_name}}} {{title=Lightning Charge Mantle – AP 5, Cloud}} {{attack=[[1d20 + 0[Attack Bonus] @{IA_CapitalShip|modifier_query}]]}} {{damage=[[1d20]]}} 0         
+        
+&{template:swn-attack} {{charname=@{IA_Cruiser|ship_name}}} {{title=Torpedo Launcher – AP 20}} {{attack=[[1d20 + 0[Attack Bonus] @{IA_Cruiser|modifier_query}]]}} {{damage=[[3d8]]}} {{ammo=[[3 - 1]] / 4}} 
+!modattr --mute --charid @{IA_Cruiser|character_id} --repeating_ship-weapons_-o3urvc4ebvwhg26y5mn_weapon_ammo|-1
+*/
+        if (impacted != 'torpedo') {
+            let message = `&{template:swn-attack} {{charname=Torpedo Strike!}} {{title=The ${impacted} is hit!}} {{attack=[[1d20 + 9]]}} {{damage=[[3d8]]}} {{desc=Damage includes ${damage} reduction from armor.}}`;
+            sendChat("system", message);
+            sendChat("API", "!roll20AM --edit,mode,single|TorpedoPing --audio,stop,nomenu|TorpedoPing");
+        }
+
+        if (impacted == 'Ship') {
+            sendChat("API","!roll20AM --audio,play,nomenu|OurShipHeavyDamage");
+            setTimeout(() => {
+                spawnFx(token.get("left"),token.get("top"),'explode-death',token.get("pageid")); 
+            }, 1000); 
+        }
+        else {
+            sendChat("API","!roll20AM --audio,play,nomenu|kaboom");
+            sendChat("API", "!roll20AM --edit,mode,single|TorpedoPing --audio,stop,nomenu|TorpedoPing");
+            spawnFx(token.get("left"),token.get("top"),'explode-death',token.get("pageid"));
+        }
+        torpedo.remove();
+    });
+    
+    function getRandomIntInclusive() {
+        const minCeiled = Math.ceil(1);
+        const maxFloored = Math.floor(8);
+        return Math.floor(Math.random() * (maxFloored - minCeiled + 1) + minCeiled);
+    }
+}
